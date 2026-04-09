@@ -552,7 +552,7 @@ class JobSearch:
         # and the ids that have been used in the job that has already been run in `used_ids`.
         requested_ids = []
         data_types = []
-        used_ids: list[Label[int]] = []
+        used_ids: list[Label[int] | Label[int | None]] = []
         for k, input_list in input_data.items():
             # k will be matched against the JobParameter.name column. This can be prefixed depending on whether
             # the input is in a repeat, or not (section and conditional)
@@ -797,7 +797,7 @@ class JobSearch:
         self,
         stmt: "Select[tuple[int]]",
         data_conditions: list["ColumnElement[bool]"],
-        used_ids: list["Label[int]"],
+        used_ids: list["Label[int] | Label[int | None]"],
         k,
         v,
         identifier,
@@ -864,7 +864,7 @@ class JobSearch:
         self,
         stmt: "Select[tuple[int]]",
         data_conditions: list["ColumnElement[bool]"],
-        used_ids: list["Label[int]"],
+        used_ids: list["Label[int] | Label[int | None]"],
         k,
         v,
         value_index: int,
@@ -887,7 +887,7 @@ class JobSearch:
         self,
         stmt: "Select[tuple[int]]",
         data_conditions: list["ColumnElement[bool]"],
-        used_ids: list["Label[int]"],
+        used_ids: list["Label[int] | Label[int | None]"],
         k,
         v,
         user_id: int,
@@ -1135,7 +1135,7 @@ class JobSearch:
         self,
         stmt: "Select[tuple[int]]",
         data_conditions: list["ColumnElement[bool]"],
-        used_ids: list["Label[int]"],
+        used_ids: list["Label[int] | Label[int | None]"],
         k,
         v,
         user_id: int,

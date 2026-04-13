@@ -106,7 +106,7 @@ jobs:
           node-version: ${{ steps.node-version.outputs.version }}
           registry-url: 'https://registry.npmjs.org'
       - name: Setup pnpm
-        uses: pnpm/action-setup@v5
+        uses: pnpm/action-setup@v6
       - name: build client
         run: pnpm install && pnpm build-production
         working-directory: 'client'

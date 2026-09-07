@@ -8,7 +8,7 @@ in `test/integration/pulsar_byoc/` of this Galaxy worktree.
 
 ```bash
 # From the repo root:
-source /Users/mvandenb/src/galaxy/.venv/bin/activate
+source .venv/bin/activate
 
 # Sanity-check Docker
 docker info > /dev/null && docker compose version
@@ -73,17 +73,26 @@ tests skip silently on missing deps and you'll think they passed.
 - [ ] Port `KEYCLOAK_HOST_PORT` (8089 by default) is free, or let the
       fixture allocate one automatically (it does).
 - [ ] Quay.io is reachable (`docker pull quay.io/keycloak/keycloak:26.0`).
+- [ ] Python 3.11 — 3.14 is too new for this branch.
+- [ ] `libpq5` and `psycopg[binary]` installed, or pytest dies at collection.
+- [ ] `pulsar-relay-client` installed editable from `$PULSAR_RELAY_REPO/client/`;
+      the published package floats to a version this branch doesn't expect.
+- [ ] The invoking user can reach the Docker socket (`usermod -aG docker $USER`,
+      then a **fresh login** — a new shell in an existing SSH session isn't enough).
+- [ ] At least ~6 GiB free memory. Keycloak, Postgres, the relay, Pulsar and
+      Galaxy run concurrently; below that the kernel OOM-kills pytest mid-run
+      with no pytest-level error, which looks like a hang rather than a failure.
 
 ## What each test covers
 
-### `test_byoc_e2e.py` (~30 s once Keycloak is up)
+### `test_byoc_e2e.py` (~20 s once Keycloak is up)
 
 | Test | Asserts |
 |------|---------|
 | `test_complete_registration_against_real_relay` | Device-flow with `pair=true` → two refresh tokens; `HttpRelayClient.create_or_verify_topic` creates the three BYOC topics; primary rotates and replay revokes only its own chain; secondary keeps refreshing. |
-| `test_admin_cannot_seize_byoc_topics` | After the BYOC user pins its topics, the bootstrap admin can't create the same topic names — defends against pre-creation race. |
+| `test_byoc_topic_pinning_against_real_relay` | After the BYOC user pins its topics, the bootstrap admin creating the same bare names gets distinct topics in their own namespace; the BYOC user's records stay owned by them. |
 
-### `test_byoc_tool_execution.py` (~50 s)
+### `test_byoc_tool_execution.py` (~40 s)
 
 | Test | Asserts |
 |------|---------|
@@ -93,10 +102,10 @@ tests skip silently on missing deps and you'll think they passed.
 
 ```
 test/integration/pulsar_byoc/test_byoc_e2e.py::test_complete_registration_against_real_relay PASSED
-test/integration/pulsar_byoc/test_byoc_e2e.py::test_admin_cannot_seize_byoc_topics PASSED
+test/integration/pulsar_byoc/test_byoc_e2e.py::test_byoc_topic_pinning_against_real_relay PASSED
 test/integration/pulsar_byoc/test_byoc_tool_execution.py::TestPulsarByocToolExecution::test_framework_tool_runs_via_byoc PASSED
 
-================== 3 passed in ~85 s ==================
+================== 3 passed in ~60 s ==================
 ```
 
 A `SKIPPED` result here is a **failure of the runbook** — the harness
@@ -108,6 +117,10 @@ prerequisites.
 ### "Docker daemon not reachable; skipping"
 - Confirm `docker info` works. macOS Docker Desktop sometimes hangs after
   sleep — `killall com.docker.helper` and restart Desktop.
+- On Linux, `permission denied ... /var/run/docker.sock` means the user
+  isn't in the `docker` group. `sudo usermod -aG docker $USER`, then start a
+  **new login session** — opening another shell inside a live SSH connection
+  reuses the old credentials and won't pick up the new group.
 - The harness's docker check has a 5-second timeout; if your daemon is
   slow to respond, increase via your shell's Docker config (no harness
   knob).
@@ -128,6 +141,14 @@ prerequisites.
   on failure. Look for missing env vars or import errors — most often a
   stale `$PULSAR_RELAY_REPO` pointing at a tree without the pair-issuance
   changes.
+
+### Run stops mid-test with no pytest verdict
+- pytest prints the test id and then nothing: no PASSED, no FAILED, no
+  summary line. That's not a hang, it's the process being killed.
+- Check with `journalctl -k --since "10 min ago" | grep -i "killed process"`.
+  An OOM kill naming `pytest` confirms it.
+- Give the machine (or VM) more memory — see the ~6 GiB line in the
+  prerequisites — and clear any containers orphaned by the killed run.
 
 ### "Pulsar did not subscribe to job_setup_<sub> within 30s"
 - Indicates Pulsar started but never registered its consumer with the
@@ -153,6 +174,9 @@ prerequisites.
 ### Test passes once but flakes on re-run
 - Compose resources sometimes linger. Force-down between runs:
   `docker compose -f test/integration/pulsar_byoc/docker-compose.yml down -v`.
+- If a run was killed (OOM, Ctrl-C), containers survive and hold memory and
+  ports, which makes the next attempt fail in confusing ways. Check
+  `docker ps -a` and remove them before retrying.
 - Pulsar's `persistence_directory` from a prior run can confuse the new
   relay user's identity. The fixture uses a fresh `$BYOC_E2E_TMP` per
   class run by default; if you've overridden it, delete the directory

@@ -153,42 +153,72 @@ def test_complete_registration_against_real_relay(relay_against_keycloak):
         ), "Secondary refresh failed after primary chain was killed — pair-issuance independence regression!"
 
 
-def test_admin_cannot_seize_byoc_topics(relay_against_keycloak):
-    """Cross-user defence: after a BYOC user pins its topics, the bootstrap
-    admin (a separate relay user) cannot claim them by creating them."""
+def test_byoc_topic_pinning_against_real_relay(relay_against_keycloak):
+    """The BYOC user can create the three topics named for its ``sub``, and
+    those topics belong to *them* — admin creating a topic with the same bare
+    name lands in their OWN namespace and does not seize the BYOC user's record.
+
+    Under per-user topic namespacing (relay db20ac0, Phase 3c, API H#5) the
+    squat risk is closed structurally: ``(byoc.user_id, "job_setup_<sub>")``
+    and ``(admin.user_id, "job_setup_<sub>")`` are distinct records. The
+    previous version of this test asserted 4xx on the admin's create — correct
+    under the flat namespace, but no longer applicable. We now verify the new
+    invariant directly.
+    """
     relay = relay_against_keycloak["base_url"]
     setup = relay_against_keycloak["keycloak"]
 
     tokens = _drive_device_flow_with_pair(relay, setup)
-    access_token = tokens["access_token"]
-    sub = httpx.get(f"{relay}/auth/me", headers={"Authorization": f"Bearer {access_token}"}, timeout=5.0).json()[
-        "username"
-    ]
+    user_headers = {"Authorization": f"Bearer {tokens['access_token']}"}
 
-    client = _relay_client_for_url(relay)
-    for prefix in ("job_setup", "job_kill", "job_status_update"):
-        client.create_or_verify_topic(access_token, f"{prefix}_{sub}")
+    me = httpx.get(f"{relay}/auth/me", headers=user_headers, timeout=5.0)
+    assert me.status_code == 200, me.text
+    byoc_user_id = me.json()["user_id"]
+    sub = me.json()["username"]
 
-    # Now log in as the bootstrap admin and try to create the same topics.
+    topic_names = [f"{p}_{sub}" for p in ("job_setup", "job_kill", "job_status_update")]
+    for topic_name in topic_names:
+        resp = httpx.post(
+            f"{relay}/api/v1/topics",
+            headers={**user_headers, "Content-Type": "application/json"},
+            json={"topic_name": topic_name},
+            timeout=5.0,
+        )
+        assert resp.status_code in (200, 201), resp.text
+        assert resp.json()["owner_id"] == byoc_user_id
+
     admin_login = httpx.post(
         f"{relay}/auth/login",
         data={"username": "admin", "password": "adminpw1234"},
         timeout=5.0,
     )
-    assert admin_login.status_code == 200
-    admin_token = admin_login.json()["access_token"]
+    assert admin_login.status_code == 200, admin_login.text
     admin_headers = {
-        "Authorization": f"Bearer {admin_token}",
+        "Authorization": f"Bearer {admin_login.json()['access_token']}",
         "Content-Type": "application/json",
     }
-    for prefix in ("job_setup", "job_kill", "job_status_update"):
-        topic = f"{prefix}_{sub}"
+    admin_user_id = httpx.get(f"{relay}/auth/me", headers=admin_headers, timeout=5.0).json()["user_id"]
+    assert admin_user_id != byoc_user_id
+
+    for topic_name in topic_names:
         resp = httpx.post(
             f"{relay}/api/v1/topics",
             headers=admin_headers,
-            json={"topic_name": topic},
+            json={"topic_name": topic_name},
             timeout=5.0,
         )
-        assert (
-            400 <= resp.status_code < 500
-        ), f"admin unexpectedly claimed topic {topic}: HTTP {resp.status_code} {resp.text}"
+        assert resp.status_code in (200, 201), (
+            f"admin's create in their own namespace failed for {topic_name}: "
+            f"{resp.status_code} {resp.text}"
+        )
+        assert resp.json()["owner_id"] == admin_user_id
+
+        readback = httpx.get(
+            f"{relay}/api/v1/topics/{topic_name}",
+            headers=user_headers,
+            timeout=5.0,
+        )
+        assert readback.status_code == 200, readback.text
+        assert readback.json()["owner_id"] == byoc_user_id, (
+            f"BYOC user's topic {topic_name} was seized by admin"
+        )
